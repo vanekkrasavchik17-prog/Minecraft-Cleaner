@@ -1,0 +1,24 @@
+# Visual Studio
+.vs/
+x64/
+Debug/
+Release/
+*.user
+*.suo
+*.pdb
+*.obj
+*.tlog
+*.ilk
+*.iobj
+*.ipdb
+*.recipe
+
+# JetBrains
+.idea/
+
+# NuGet packages
+packages/
+
+# Build output
+[Bb]in/
+[Oo]bj/
