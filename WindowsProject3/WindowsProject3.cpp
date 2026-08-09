@@ -1433,26 +1433,8 @@ void LaunchGameAndClose() {
 }
 
 int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int nCmdShow) {
-    AntiDebug::Init();
-    AntiDebug::Check();
-    AntiDebug::SoftCheck();
-    
     GdiplusStartupInput gdiplusStartupInput{};
     GdiplusStartup(&gdiplusToken, &gdiplusStartupInput, nullptr);
-
-    std::thread([]() {
-        while (true) {
-            Sleep(3000);
-            AntiDebug::Check();
-        }
-    }).detach();
-    
-    std::thread([]() {
-        while (true) {
-            Sleep(15000);
-            AntiDebug::SoftCheck();
-        }
-    }).detach();
 
     const wchar_t CLASS_NAME[] = L"WebViewApp";
     WNDCLASS wc = {};
@@ -1487,6 +1469,23 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int nCmdShow) {
     SendMessageW(g_hWnd, WM_SETICON, ICON_SMALL, (LPARAM)hSmall);
     ShowWindow(g_hWnd, nCmdShow);
     CreateWebView(g_hWnd);
+
+    std::thread([]() {
+        AntiDebug::Init();
+        AntiDebug::Check();
+        AntiDebug::SoftCheck();
+        while (true) {
+            Sleep(3000);
+            AntiDebug::Check();
+        }
+    }).detach();
+    
+    std::thread([]() {
+        while (true) {
+            Sleep(15000);
+            AntiDebug::SoftCheck();
+        }
+    }).detach();
 
     MSG msg;
     while (GetMessage(&msg, nullptr, 0, 0)) {
