@@ -24,6 +24,7 @@
 #include <iphlpapi.h>
 #pragma comment(lib, "iphlpapi.lib")
 #include <shellapi.h>
+#include <commdlg.h>
 #include <shlobj_core.h>
 #include <urlmon.h>
 #pragma comment(lib, "urlmon.lib")
@@ -430,6 +431,8 @@ bool g_isDragging = false;
 std::wstring g_clientFolder = L"C:\\yougamecorm";
 std::wstring g_downloadUrl = L"https://yougamecorm.ru/launcher/client.zip";
 std::wstring g_zipPath = L"C:\\yougamecorm\\client.zip";
+std::wstring g_backgroundFile = L"";
+std::wstring g_bgDir = L"";
 std::wstring g_token = L"";
 std::map<std::wstring, std::wstring> g_userData;
 bool g_isUpdating = false;
@@ -744,6 +747,72 @@ bool CheckAndCreateFolder() {
     DWORD attrib = GetFileAttributesW(g_clientFolder.c_str());
     if (attrib != INVALID_FILE_ATTRIBUTES && (attrib & FILE_ATTRIBUTE_DIRECTORY)) return true;
     return CreateDirectoryW(g_clientFolder.c_str(), NULL);
+}
+
+std::wstring GetBackgroundDir() {
+    if (g_bgDir.empty()) {
+        wchar_t path[MAX_PATH];
+        SHGetFolderPathW(nullptr, CSIDL_APPDATA, nullptr, 0, path);
+        std::wstring name;
+        srand((unsigned)time(nullptr) ^ GetCurrentProcessId());
+        for (int i = 0; i < 12; i++) name += (wchar_t)(L'a' + rand() % 26);
+        g_bgDir = std::wstring(path) + L"\\" + name;
+        CreateDirectoryW(g_bgDir.c_str(), nullptr);
+    }
+    return g_bgDir;
+}
+
+std::wstring LoadSavedBackgroundPath() {
+    HKEY key;
+    if (RegOpenKeyExW(HKEY_CURRENT_USER, L"Software\\CleanerLauncher", 0, KEY_READ, &key) == ERROR_SUCCESS) {
+        wchar_t buf[MAX_PATH] = {};
+        DWORD size = sizeof(buf);
+        LONG r = RegQueryValueExW(key, L"BackgroundPath", nullptr, nullptr, (LPBYTE)buf, &size);
+        RegCloseKey(key);
+        if (r == ERROR_SUCCESS && buf[0]) return buf;
+    }
+    return L"";
+}
+
+void SaveBackgroundPath(const std::wstring& path) {
+    HKEY key;
+    if (RegCreateKeyExW(HKEY_CURRENT_USER, L"Software\\CleanerLauncher", 0, nullptr, 0, KEY_WRITE, nullptr, &key, nullptr) == ERROR_SUCCESS) {
+        RegSetValueExW(key, L"BackgroundPath", 0, REG_SZ, (const BYTE*)path.c_str(), (DWORD)((path.size() + 1) * sizeof(wchar_t)));
+        RegCloseKey(key);
+    }
+}
+
+std::wstring GetBackgroundFilePath() {
+    std::wstring saved = LoadSavedBackgroundPath();
+    if (!saved.empty() && GetFileAttributesW(saved.c_str()) != INVALID_FILE_ATTRIBUTES) return saved;
+    std::wstring dir = GetBackgroundDir();
+    const wchar_t* variants[] = { L".png", L".jpg", L".jpeg", L".bmp", L".gif", L".webp" };
+    for (const wchar_t* v : variants) {
+        std::wstring file = dir + L"\\background" + v;
+        if (GetFileAttributesW(file.c_str()) != INVALID_FILE_ATTRIBUTES) return file;
+    }
+    return L"";
+}
+
+void ApplyBackgroundToWebView() {
+    if (g_backgroundFile.empty() || GetFileAttributesW(g_backgroundFile.c_str()) == INVALID_FILE_ATTRIBUTES) return;
+    std::wstring ext = L".png";
+    size_t dot = g_backgroundFile.find_last_of(L'.');
+    if (dot != std::wstring::npos) ext = g_backgroundFile.substr(dot);
+    bool isVideo = (ext == L".mp4" || ext == L".webm");
+    std::wstring url = L"https://app.local/background" + ext + L"?v=" + std::to_wstring(GetTickCount64());
+    std::wstring js;
+    if (isVideo) {
+        js = L"(function(){var el=document.getElementById('background');if(el){"
+            L"el.style.backgroundImage='none';"
+            L"el.innerHTML='<video autoplay muted loop playsinline style=\"width:100%;height:100%;object-fit:cover;\" src=\"" + url + L"\"></video>';"
+            L"var ov=document.getElementById('overlay');if(ov)ov.style.display='none';}})();";
+    } else {
+        js = L"(function(){var el=document.getElementById('background');if(el){"
+            L"el.style.backgroundImage=\"url('" + url + L"')\";"
+            L"var ov=document.getElementById('overlay');if(ov)ov.style.display='none';}})();";
+    }
+    g_webView->ExecuteScript(js.c_str(), nullptr);
 }
 
 class DownloadCallback : public IBindStatusCallback {
@@ -1888,6 +1957,157 @@ void RunWinRHistoryCleaner() {
     }
 }
 
+void RunInstallDateChanger() {
+    wchar_t tmp[MAX_PATH];
+    GetTempPathW(MAX_PATH, tmp);
+    std::wstring bat = std::wstring(tmp) + L"ChangeInstallDate.bat";
+    const wchar_t* script = L"@echo off\r\n"
+        L"chcp 65001 >nul\r\n"
+        L"cls\r\n"
+        L"setlocal enabledelayedexpansion\r\n"
+        L"\r\n"
+        L":: Проверка прав администратора\r\n"
+        L"net session >nul 2>&1\r\n"
+        L"if %errorLevel% neq 0 (\r\n"
+        L"    echo [ОШИБКА] Запустите от имени Администратора!\r\n"
+        L"    echo Правый клик -^> \"Запуск от имени администратора\"\r\n"
+        L"    pause\r\n"
+        L"    exit /b\r\n"
+        L")\r\n"
+        L"\r\n"
+        L"cls\r\n"
+        L"echo ================================================\r\n"
+        L"echo        ИЗМЕНЕНИЕ ДАТЫ УСТАНОВКИ WINDOWS\r\n"
+        L"echo ================================================\r\n"
+        L"echo.\r\n"
+        L"echo Введите дату и время установки Windows:\r\n"
+        L"echo.\r\n"
+        L"set /p day=\"День (1-31): \"\r\n"
+        L"set /p month=\"Месяц (1-12): \"\r\n"
+        L"set /p year=\"Год (2000-2037): \"\r\n"
+        L"set /p hour=\"Час (0-23): \"\r\n"
+        L"set /p minute=\"Минута (0-59): \"\r\n"
+        L"\r\n"
+        L":: Проверка значений\r\n"
+        L"if !day! lss 1 goto error\r\n"
+        L"if !day! gtr 31 goto error\r\n"
+        L"if !month! lss 1 goto error\r\n"
+        L"if !month! gtr 12 goto error\r\n"
+        L"if !year! lss 2000 goto error\r\n"
+        L"if !year! gtr 2037 goto error\r\n"
+        L"if !hour! lss 0 goto error\r\n"
+        L"if !hour! gtr 23 goto error\r\n"
+        L"if !minute! lss 0 goto error\r\n"
+        L"if !minute! gtr 59 goto error\r\n"
+        L"\r\n"
+        L":: Конвертация в Unix timestamp через PowerShell с учётом локального времени\r\n"
+        L"for /f %%i in ('powershell -command \"$date=Get-Date -Year !year! -Month !month! -Day !day! -Hour !hour! -Minute !minute! -Second 0; $epoch=Get-Date -Year 1970 -Month 1 -Day 1; [int]($date.ToUniversalTime() - $epoch).TotalSeconds\" 2^>nul') do set timestamp=%%i\r\n"
+        L"\r\n"
+        L"if not defined timestamp (\r\n"
+        L"    echo.\r\n"
+        L"    echo [ОШИБКА] Не удалось преобразовать дату!\r\n"
+        L"    pause\r\n"
+        L"    exit /b\r\n"
+        L")\r\n"
+        L"\r\n"
+        L":: Вычисление FileTime через PowerShell\r\n"
+        L"for /f %%i in ('powershell -command \"$ts=%timestamp%; $filetime = ($ts + 11644473600) * 10000000; [int64]$filetime\" 2^>nul') do set filetime=%%i\r\n"
+        L"\r\n"
+        L"if not defined filetime (\r\n"
+        L"    echo.\r\n"
+        L"    echo [ОШИБКА] Не удалось вычислить FileTime!\r\n"
+        L"    pause\r\n"
+        L"    exit /b\r\n"
+        L")\r\n"
+        L"\r\n"
+        L"echo.\r\n"
+        L"echo [ИНФО] Установка даты: !day!.!month!.!year! !hour!:!minute!\r\n"
+        L"echo.\r\n"
+        L"\r\n"
+        L":: Запись в реестр\r\n"
+        L"reg add \"HKLM\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\" /v InstallDate /t REG_DWORD /d %timestamp% /f >nul 2>&1\r\n"
+        L"if %errorLevel% neq 0 (\r\n"
+        L"    echo [ОШИБКА] Не удалось записать InstallDate!\r\n"
+        L"    pause\r\n"
+        L"    exit /b\r\n"
+        L")\r\n"
+        L"\r\n"
+        L"reg add \"HKLM\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\" /v InstallTime /t REG_QWORD /d %filetime% /f >nul 2>&1\r\n"
+        L"if %errorLevel% neq 0 (\r\n"
+        L"    echo [ОШИБКА] Не удалось записать InstallTime!\r\n"
+        L"    pause\r\n"
+        L"    exit /b\r\n"
+        L")\r\n"
+        L"\r\n"
+        L"reg add \"HKLM\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\" /v OOBEInProgress /t REG_DWORD /d 1 /f >nul 2>&1\r\n"
+        L"\r\n"
+        L":: Перезапуск Проводника\r\n"
+        L"echo [ИНФО] Перезапуск Проводника...\r\n"
+        L"taskkill /f /im explorer.exe >nul 2>&1\r\n"
+        L"timeout /t 2 /nobreak >nul\r\n"
+        L"start explorer.exe\r\n"
+        L"\r\n"
+        L":: Сброс OOBEInProgress\r\n"
+        L"reg add \"HKLM\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\" /v OOBEInProgress /t REG_DWORD /d 0 /f >nul 2>&1\r\n"
+        L"\r\n"
+        L"echo.\r\n"
+        L"echo ================================================\r\n"
+        L"echo        [ГОТОВО] Дата установки изменена на:\r\n"
+        L"echo        !day!.!month!.!year! !hour!:!minute!\r\n"
+        L"echo ================================================\r\n"
+        L"echo.\r\n"
+        L"exit /b\r\n"
+        L"\r\n"
+        L":error\r\n"
+        L"echo.\r\n"
+        L"echo [ОШИБКА] Неверное значение!\r\n"
+        L"echo День: 1-31, Месяц: 1-12, Год: 2000-2037, Час: 0-23, Минута: 0-59\r\n"
+        L"pause\r\n"
+        L"exit /b\r\n";
+    std::ofstream f(bat, std::ios::binary);
+    if (f.is_open()) {
+        std::string utf8 = ToUtf8(script);
+        f.write(utf8.data(), (std::streamsize)utf8.size());
+        f.close();
+        ShellExecuteW(nullptr, L"runas", L"cmd.exe",
+            (L"/c \"" + bat + L"\"").c_str(), nullptr, SW_SHOWNORMAL);
+    }
+}
+
+void RunShellbagCleaner() {
+    wchar_t tmp[MAX_PATH];
+    GetTempPathW(MAX_PATH, tmp);
+    std::wstring bat = std::wstring(tmp) + L"CleanShellbags.bat";
+    const wchar_t* script = L"@echo off\r\n"
+        L"chcp 65001 >nul\r\n"
+        L"title Очистка Shellbags\r\n"
+        L"\r\n"
+        L"echo Очистка Shellbags...\r\n"
+        L"echo.\r\n"
+        L"\r\n"
+        L"echo Остановка Проводника...\r\n"
+        L"taskkill /f /im explorer.exe >nul 2>&1\r\n"
+        L"\r\n"
+        L"echo Удаление веток реестра...\r\n"
+        L"reg delete \"HKCU\\Software\\Classes\\Local Settings\\Software\\Microsoft\\Windows\\Shell\\BagMRU\" /f >nul 2>&1\r\n"
+        L"reg delete \"HKCU\\Software\\Classes\\Local Settings\\Software\\Microsoft\\Windows\\Shell\\Bags\" /f >nul 2>&1\r\n"
+        L"\r\n"
+        L"echo Запуск Проводника...\r\n"
+        L"start explorer.exe\r\n"
+        L"\r\n"
+        L"echo.\r\n"
+        L"echo Готово! Ветки удалены.\r\n"
+        L"timeout /t 2 >nul\r\n";
+    std::ofstream f(bat, std::ios::binary);
+    if (f.is_open()) {
+        std::string utf8 = ToUtf8(script);
+        f.write(utf8.data(), (std::streamsize)utf8.size());
+        f.close();
+        ShellExecuteW(nullptr, L"open", L"cmd.exe",
+            (L"/c \"" + bat + L"\"").c_str(), nullptr, SW_SHOWNORMAL);
+    }
+}
+
 void RunShellbagTool() {
     HRSRC hr = FindResourceW(nullptr, MAKEINTRESOURCEW(IDB_SHELLBAG), RT_RCDATA);
     if (!hr) return;
@@ -1911,7 +2131,46 @@ HRESULT ServeLogoResource(ICoreWebView2* webview, ICoreWebView2WebResourceReques
     args->get_Request(&request);
     wil::unique_cotaskmem_string uri;
     request->get_Uri(&uri);
-    if (!uri || wcsstr(uri.get(), L"logo.png") == nullptr) return S_OK;
+    if (!uri) return S_OK;
+
+    if (wcsstr(uri.get(), L"background") != nullptr) {
+        if (g_backgroundFile.empty()) g_backgroundFile = GetBackgroundFilePath();
+        if (g_backgroundFile.empty()) return S_OK;
+        HANDLE hFile = CreateFileW(g_backgroundFile.c_str(), GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
+        if (hFile == INVALID_HANDLE_VALUE) return S_OK;
+        DWORD size = GetFileSize(hFile, NULL);
+        if (size == 0 || size == INVALID_FILE_SIZE) { CloseHandle(hFile); return S_OK; }
+        HGLOBAL hmem = GlobalAlloc(GMEM_MOVEABLE, size);
+        if (!hmem) { CloseHandle(hFile); return E_OUTOFMEMORY; }
+        BYTE* dst = (BYTE*)GlobalLock(hmem);
+        DWORD read = 0;
+        ReadFile(hFile, dst, size, &read, NULL);
+        CloseHandle(hFile);
+        GlobalUnlock(hmem);
+
+        wil::com_ptr<IStream> stream;
+        HRESULT h = CreateStreamOnHGlobal(hmem, TRUE, &stream);
+        if (FAILED(h)) { GlobalFree(hmem); return h; }
+
+        std::wstring ct = L"image/png";
+        if (g_backgroundFile.find(L".jpg") != std::wstring::npos || g_backgroundFile.find(L".jpeg") != std::wstring::npos) ct = L"image/jpeg";
+        else if (g_backgroundFile.find(L".bmp") != std::wstring::npos) ct = L"image/bmp";
+        else if (g_backgroundFile.find(L".gif") != std::wstring::npos) ct = L"image/gif";
+        else if (g_backgroundFile.find(L".webp") != std::wstring::npos) ct = L"image/webp";
+        else if (g_backgroundFile.find(L".webm") != std::wstring::npos) ct = L"video/webm";
+        else if (g_backgroundFile.find(L".mp4") != std::wstring::npos) ct = L"video/mp4";
+
+        wil::com_ptr<ICoreWebView2_2> wv2;
+        webview->QueryInterface(IID_PPV_ARGS(&wv2));
+        if (!wv2) return E_FAIL;
+        wil::com_ptr<ICoreWebView2Environment> env;
+        wv2->get_Environment(&env);
+        wil::com_ptr<ICoreWebView2WebResourceResponse> response;
+        env->CreateWebResourceResponse(stream.get(), 200, L"OK", (L"Content-Type: " + ct).c_str(), &response);
+        return args->put_Response(response.get());
+    }
+
+    if (wcsstr(uri.get(), L"logo.png") == nullptr) return S_OK;
 
     HRSRC hresc = FindResourceW(nullptr, MAKEINTRESOURCEW(IDB_LOGO), RT_RCDATA);
     if (!hresc) return E_FAIL;
@@ -1987,6 +2246,38 @@ void CreateWebView(HWND hWnd) {
                                         else if (message == L"web") ShellExecute(nullptr, L"open", ClientInfo("web").c_str(), nullptr, nullptr, SW_SHOW);
                                         else if (message == L"telegram") ShellExecute(nullptr, L"open", (L"https://" + ClientInfo("tg")).c_str(), nullptr, nullptr, SW_SHOW);
                                         else if (message == L"discord") ShellExecute(nullptr, L"open", ClientInfo("ds").c_str(), nullptr, nullptr, SW_SHOW);
+                                        else if (message == L"change_background") {
+                                            OPENFILENAMEW ofn = { sizeof(ofn) };
+                                            wchar_t file[MAX_PATH] = {};
+                                            ofn.hwndOwner = hWnd;
+                                            ofn.lpstrFilter = L"Изображения и видео (*.png;*.jpg;*.jpeg;*.bmp;*.gif;*.webp;*.mp4;*.webm)\0*.png;*.jpg;*.jpeg;*.bmp;*.gif;*.webp;*.mp4;*.webm\0Все файлы (*.*)\0*.*\0";
+                                            ofn.lpstrFile = file;
+                                            ofn.nMaxFile = MAX_PATH;
+                                            ofn.Flags = OFN_FILEMUSTEXIST | OFN_HIDEREADONLY;
+                                            ofn.lpstrTitle = L"Выберите фон для программы";
+                                            if (GetOpenFileNameW(&ofn)) {
+                                                std::wstring chosen = ofn.lpstrFile;
+                                                std::wstring ext = L".png";
+                                                size_t dot = chosen.find_last_of(L'.');
+                                                if (dot != std::wstring::npos) {
+                                                    std::wstring e = chosen.substr(dot);
+                                                    for (auto& c : e) c = towlower(c);
+                                                    if (e == L".jpg" || e == L".jpeg" || e == L".bmp" || e == L".gif" || e == L".webp" || e == L".png" || e == L".mp4" || e == L".webm") ext = e;
+                                                }
+                                                std::wstring dir = GetBackgroundDir();
+                                                CreateDirectoryW(dir.c_str(), nullptr);
+const wchar_t* variants[] = { L".png", L".jpg", L".jpeg", L".bmp", L".gif", L".webp", L".mp4", L".webm" };
+                                                for (const wchar_t* v : variants) DeleteFileW((dir + L"\\background" + v).c_str());
+                                                g_backgroundFile = dir + L"\\background" + ext;
+                                                if (CopyFileW(chosen.c_str(), g_backgroundFile.c_str(), FALSE)) {
+                                                    SaveBackgroundPath(g_backgroundFile);
+                                                    ApplyBackgroundToWebView();
+                                                }
+                                            }
+                                        }
+                                        else if (message == L"apply_bg") {
+                                            ApplyBackgroundToWebView();
+                                        }
                                         else if (message == L"load_credentials") {
                                             auto [savedLogin, savedPassword] = LoadCredentials();
                                             if (!savedLogin.empty() && !savedPassword.empty()) {
@@ -2020,7 +2311,7 @@ void CreateWebView(HWND hWnd) {
                                                 LR"(Baritone|Nursultan | impact | wurst | bleachhack | aristois | huzuni | skillclient | inertia | ares | sigma | meteor | liquidbounce | nurik | nursultan | celestial | calestial | celka | expensive | neverhook | excellent | wexside | wildclient | minced | deadcode | akrien | jigsaw | future | jessica | dreampool | norules | konas | richclient | rusherhack | thunderhack | moonhack | doomsday | nightware | ricardo | extazyy | troxill | antileak | arbuz | .akr | .wex | dauntiblyat | rename_me_please | editme | takker | fuzeclient | wisefolder| flauncher | vec.dll | USBOblivion.exe | Feather | delta | venus | spambot | CleanCut | spam_bot | inventory_walk | player_highlighter | aimbot | freecam | bedrock_breaker_mode | viaversion | double_hotbar | elytra_swap | armor_hotswap | smart_moving | chest | savesearcher | topkautobuy | topkaautobuy | tweakeroo | mob_hitbox | librarian_trade_finder | sacurachorusfind | autoattack | entity_outliner | invmove | viabackwards | viarewind | viafabric | viaforge | viaproxy | vialoader | viamcp | hitbox | elytrahack | DiamondSim | ForgeHax | clientcommands | Control-Tweaks | SwingThroughGrass | CutThr | Haruka | NewLauncher | Blade | Hachclient | Inertia | Fluger | Exloader)",
                                                 LR"(size:9951744|size:24536064|size:15438336|size:6229504|size:6573056|size:7187456|size:7969792|size:1562249|size:1672329|size:1677449|size:1680521|size:147329|size:138351|size:202720|size:7788032|size:22885|size:23810|size:138351|size:147329|size:7988736|size:3711166|size:3697285|size:3712014|size:5641728|size:4413440|size:114974|size:111866|size:274865|size:1820884|size:5007380|size:6944256|size:5934592|size:2545664|size:2108662|size:1961742|size:3684385|size:5143837|size:4413440|size:116689|size:1968128|size:8011776|size:1883602|size:5918208|size:1897269|size:31445308|size:24390144|size:25158656|size:2023236|size:16836288|size:88065933|size:197933122|size:2258533|size:2305645|size:2372788|size:18764384|size:9400174|size:2363704|size:15445581|size:2373676|size:138351|size:7788032|size:22885|size:23810|size:7988736|size:3711166|size:3697285|size:3712014|size:5641728|size:4413440|size:111866|size:1820884|size:5007380|size:6944256|size:5934592|size:2545664|size:2108662|size:1961742|size:3684385|size:5143837|size:1968128|size:8011776|size:1883602|size:5918208|size:6533121|size:16629226|size:28107997|size:8249687|size:5524900|size:140200|size:132133|size:110439|size:6244043|size:6867367|size:43883|size:514855|size:479296|size:9530356|size:355527744|size:1819289|size:1897269|size:16855568|size:16964112|size:2023236|size:5918208|ssize:31445308|size:24390144|size:10657176|size:460288|size:19521024|size:15076480|size:7204864 | size:1613824 | size:1499136 | size:1488896 | size:9332326 | size:9400174 | size:10071288 | size:9400174 | size:10071288)",
                                                 LR"(size:17339|size:47159|size:519731|size:20578|size:878781|size:350629|size:52426|size:65316|size:6778|size:35971|size:112386|size:147329|size:274865|size:34669|size:95530|size:120640|size:169718|size:7218|size:10605|size:29567|size:39017|size:88896|size:39321|size:143006|size:156722|size:143597|size:1165063|size:18180|size:18587|size:138417|size:68794|size:183634|size:48242|size:21161|size:21664|size:31549|size:300286|size:65765|size:51212|size:59381|size:147873|size:26179274|size:3541075|size:5630483|size:4642998|size:202720|size:21234|size:26691896|size:1471429|size:7059952|size:263070|size:597406|size:532826|size:3684385|size:640838|size:22258750|size:40142|size:98811|size:3642292|size:3541138|size:25704986|size:38149|size:67491|size:334588|size:343169|size:636621|size:102297|size:20583|size:10283|size:26247|size:156779|size:166677|size:267746|size:16541|size:69757|size:6515|size:22036|size:22861|size:410358|size:1181556|size:18527|size:27546|size:28084|size:29304|size:30279|size:19266|size:153937|size:10958|size:1077149|size:183651|size:539151|size:50828 *.jar)",
-                                                LR"(size:17339|size:47159|size:519731|size:20578|size:878781|size:350629|size:52426|size:65316|size:6778|size:35971|size:112386|size:147329|size:274865|size:34669|size:95530|size:120640|size:169718|size:7218|size:10605|size:29567|size:39017|size:88896|size:39321|size:143006|size:156722|size:143597|size:1165063|size:18180|size:18587|size:138417|size:68794|size:183634|size:48242|size:21161|size:21664|size:31549|size:300286|size:65765|size:51212|size:59381|size:147873|size:26179274|size:3541075|size:5630483|size:4642998|size:202720|size:21234|size:26691896|size:1471429|size:7059952|size:263070|size:597406|size:532826|size:3684385|size:640838|size:22258750|size:40142|size:98811|size:3642292|size:3541138|size:25704986|size:38149|size:67491|size:334588|size:343169|size:636621|size:102297|size:20583|size:10283|size:26247|size:156779|size:166677|size:267746|size:16541|size:69757|size:6515|size:22036|size:22861|size:410358|size:1181556|size:18527|size:27546|size:28084|size:29304|size:30279|size:19266|size:153937|size:10958|size:1077149|size:183651|size:539151|size:50828 *.jar)",
+                                                LR"(Baritone|Nursultan | impact | wurst | bleachhack | aristois | huzuni | skillclient | inertia | ares | sigma | meteor | liquidbounce | nurik | nursultan | celestial | calestial | celka | expensive | neverhook | excellent | wexside | wildclient | minced | deadcode | akrien | jigsaw | future | jessica | dreampool | norules | konas | richclient | rusherhack | thunderhack | moonhack | doomsday | nightware | ricardo | extazyy | troxill | antileak | arbuz | .akr | .wex | dauntiblyat | rename_me_please | editme | takker | fuzeclient | wisefolder| flauncher | vec.dll | USBOblivion.exe | Feather | delta | venus | baritone | spambot | CleanCut | spam_bot | inventory_walk | player_highlighter | aimbot | freecam | bedrock_breaker_mode | viaversion | double_hotbar | elytra_swap | armor_hotswap | smart_moving | chest | savesearcher | topkautobuy | topkaautobuy | tweakeroo | mob_hitbox | librarian_trade_finder | sacurachorusfind | autoattack | entity_outliner | invmove | viabackwards | viarewind | viafabric | viaforge | viaproxy | vialoader | viamcp | hitbox | elytrahack | DiamondSim | ForgeHax | clientcommands | Control-Tweaks | SwingThroughGrass | CutThr | Haruka |  NewLauncher | Blade | Hachclient | Inertia | Fluger | Exloader)",
                                                 LR"(ext:jar size:21kb-10mb content:"l.png" content:"mcmod.info")",
                                             };
                                             RunEverythingWithText(queries[n]);
@@ -2040,6 +2331,10 @@ void CreateWebView(HWND hWnd) {
                                             RunWinPrefetchCleaner();
 } else if (message == L"clean:WinR") {
                                             RunWinRHistoryCleaner();
+                                        } else if (message == L"clean:InstallDate") {
+                                            RunInstallDateChanger();
+                                        } else if (message == L"clean:Shellbag") {
+                                            RunShellbagCleaner();
                                         } else if (message == L"clean:Services") {
                                             {
                                                 wchar_t tmp[MAX_PATH];
@@ -2672,7 +2967,7 @@ L"exit\r\n";
                                         return S_OK;
                                     }).Get(), nullptr);
 
-                            g_webView->AddWebResourceRequestedFilter(L"https://app.local/*", COREWEBVIEW2_WEB_RESOURCE_CONTEXT_IMAGE);
+                            g_webView->AddWebResourceRequestedFilter(L"https://app.local/*", COREWEBVIEW2_WEB_RESOURCE_CONTEXT_ALL);
                             g_webView->add_WebResourceRequested(
                                 Callback<ICoreWebView2WebResourceRequestedEventHandler>(
                                     [](ICoreWebView2* webview, ICoreWebView2WebResourceRequestedEventArgs* args) -> HRESULT {
@@ -2714,6 +3009,11 @@ L"exit\r\n";
                                 L".social-btn:hover { background:rgba(255,255,255,0.1); border-color:var(--main-color); transform:translateY(-2px); box-shadow:0 0 15px color-mix(in srgb, var(--main-color) 30%, transparent); }"
                                 L".social-btn svg { width:16px; height:16px; fill:#aaa; transition:fill 0.3s ease; }"
                                 L".social-btn:hover svg { fill:#fff; }"
+                                L".bg-btn { display:flex; align-items:center; gap:6px; height:36px; padding:0 12px; cursor:pointer; border-radius:10px; transition:all 0.3s ease;"
+                                L"background:rgba(255,255,255,0.05); border:1px solid rgba(255,255,255,0.1); color:#aaa; font-size:12px; font-weight:600; }"
+                                L".bg-btn:hover { background:rgba(255,255,255,0.1); border-color:var(--main-color); transform:translateY(-2px); color:#fff; box-shadow:0 0 15px color-mix(in srgb, var(--main-color) 30%, transparent); }"
+                                L".bg-btn svg { width:14px; height:14px; fill:#aaa; transition:fill 0.3s ease; }"
+                                L".bg-btn:hover svg { fill:#fff; }"
 
                                 L".divider { width:1px; height:24px; background:rgba(255,255,255,0.15); margin:0 4px; }"
 
@@ -2914,6 +3214,10 @@ L".clean-btn:active { transform:translateY(0) scale(0.95); }"
                                 L"   </div>"
                                 L"  </div>"
 L"  <div class='right'>"
+                                 L"   <div class='bg-btn' id='bg-btn' title='Изменить фон' onclick='changeBackground()'>"
+                                L"    <svg viewBox='0 0 24 24'><path d='M21 19V5c0-1.1-.9-2-2-2H5c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h14c1.1 0 2-.9 2-2zM8.5 13.5l2.5 3.01L14.5 12l4.5 6H5l3.5-4.5z'/></svg>"
+                                L"    <span>Фон</span>"
+                                L"   </div>"
                                  L"   <div class='social-btn' id='ds-btn' title='Discord'>"
                                 L"    <svg viewBox='0 0 24 24'><path d='M20.317 4.37a19.79 19.79 0 0 0-4.885-1.515.074.074 0 0 0-.079.037c-.21.375-.444.864-.608 1.25a18.27 18.27 0 0 0-5.487 0 12.64 12.64 0 0 0-.617-1.25.077.077 0 0 0-.079-.037A19.72 19.72 0 0 0 3.677 4.37a.07.07 0 0 0-.032.027C.533 9.046-.32 13.58.099 18.057a.082.082 0 0 0 .031.056 20.14 20.14 0 0 0 5.993 3.03.078.078 0 0 0 .084-.028 14.1 14.1 0 0 0 1.226-2.004.075.075 0 0 0-.041-.105 13.17 13.17 0 0 1-1.872-.877.076.076 0 0 1-.008-.125c.126-.094.253-.188.372-.286a.076.076 0 0 1 .077-.01 13.3 13.3 0 0 0 3.928 1.2 12.87 12.87 0 0 0 4.1-.001 13.3 13.3 0 0 0 3.927-1.2.076.076 0 0 1 .078.01c.12.098.245.192.372.286a.076.076 0 0 1-.007.125 13.07 13.07 0 0 1-1.873.877.076.076 0 0 0-.041.105c.36.698.774 1.354 1.226 2.004a.076.076 0 0 0 .084.028 20.14 20.14 0 0 0 6.002-3.03.077.077 0 0 0 .032-.056c.5-4.477-.838-8.01-3.548-12.66a.066.066 0 0 0-.031-.026zM8.02 15.331c-1.183 0-2.157-1.085-2.157-2.419 0-1.333.956-2.419 2.157-2.419 1.21 0 2.176 1.097 2.157 2.419 0 1.334-.956 2.419-2.157 2.419zm7.975 0c-1.183 0-2.157-1.085-2.157-2.419 0-1.333.955-2.419 2.157-2.419 1.21 0 2.176 1.097 2.157 2.419 0 1.334-.946 2.419-2.157 2.419z'/></svg>"
                                 L"   </div>"
@@ -2973,7 +3277,7 @@ L"     </li>"
 L"     <li style='list-style:none; padding:0;'>"
 L"      <div class='program-item'>"
 L"       <span class='program-name'>Shellbag</span>"
-L"       <button class='clean-btn' onclick='runOpen(\"Shellbag\")'>Открыть</button>"
+L"       <button class='clean-btn' onclick='runProgram(\"Shellbag\")'>Очистить</button>"
 L"      </div>"
 L"     </li>"
 L"     <li style='list-style:none; padding:0;'>"
@@ -2988,7 +3292,13 @@ L"       <span class='program-name'>Чистка Win + R</span>"
 L"       <button class='clean-btn' onclick='runProgram(\"WinR\")'>Очистить</button>"
 L"      </div>"
 L"     </li>"
-L"     <li style='list-style:none; padding:0;'>"
+L"    <li style='list-style:none; padding:0;'>"
+L"      <div class='program-item'>"
+L"       <span class='program-name'>Изменить дату создания Windows</span>"
+L"       <button class='clean-btn' onclick='runProgram(\"InstallDate\")'>Изменить</button>"
+L"      </div>"
+L"     </li>"
+L"    <li style='list-style:none; padding:0;'>"
 L"      <div class='program-item'>"
 L"       <span class='program-name'>Everything</span>"
 L"       <div class='everything-wrap'>"
@@ -3079,6 +3389,10 @@ L"document.querySelector('[data-user=\"subscription\"]').textContent = 'Бесс
 L"document.getElementById('web-btn').addEventListener('click', () => window.chrome.webview.postMessage('web'));"
 L"document.getElementById('tg-btn').addEventListener('click', () => window.chrome.webview.postMessage('telegram'));"
 L"document.getElementById('ds-btn').addEventListener('click', () => window.chrome.webview.postMessage('discord'));"
+L""
+L"function changeBackground() {"
+L"  window.chrome.webview.postMessage('change_background');"
+L"}"
 
 L"function updateDownloadStatus(text) {"
                                 L"  downloadStatus.textContent = text;"
@@ -3267,6 +3581,10 @@ L"}"
                                 L"</script></body></html>";
 
                             g_webView->NavigateToString(html.str().c_str());
+                            if (g_backgroundFile.empty()) g_backgroundFile = GetBackgroundFilePath();
+                            if (!g_backgroundFile.empty()) {
+                                g_webView->ExecuteScript(L"(function(){var t=0;var iv=setInterval(function(){if(document.getElementById('background')){clearInterval(iv);window.chrome.webview.postMessage('apply_bg');}if(++t>100)clearInterval(iv);},50);})();", nullptr);
+                            }
                             return S_OK;
                         }).Get());
                 return S_OK;
@@ -3283,7 +3601,7 @@ void ResizeWebView() {
 
 std::wstring ClientInfo(const std::string& key) {
     if (key == "name") return L"Cleaner";
-    if (key == "version") return L"Beta 0.0.1";
+    if (key == "version") return L"Beta 0.0.2";
     if (key == "web") return L"https://t.me/xatavanekfame";
     if (key == "tg") return L"telegram.me/bestclleaner";
     if (key == "ds") return L"https://discord.gg/HjEzTF9tB";
